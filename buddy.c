@@ -244,6 +244,7 @@ Node* create_node(size_t size, size_t mempool_offset, Node* parent) {
 BuddyAllocator* create_allocator() {
     BuddyAllocator* buddyAllocator = (BuddyAllocator*)malloc(sizeof(BuddyAllocator));
     buddyAllocator->root = create_node(TOTAL_MEMORY,0,NULL);
+    print_node_details(buddyAllocator->root, "Checking node before allocation");
     return buddyAllocator;
 }
 
@@ -433,6 +434,7 @@ Node* allocate_recursive(Node* node, size_t size) {
     }
     
     Node* allocated_node = allocate_recursive(allocator->root, size);
+    print_node_details(allocated_node, "Checking node before allocation");
     if(allocated_node == NULL) {
         printf("Allocation failed: no suitable free block found for %zu KB.\n", size);
         return NULL;
