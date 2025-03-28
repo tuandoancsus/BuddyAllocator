@@ -242,7 +242,9 @@ Node* create_node(size_t size, size_t mempool_offset, Node* parent) {
  * @return A pointer to the newly created `BuddyAllocator` structure.
  */
 BuddyAllocator* create_allocator() {
-    // todo
+    BuddyAllocator* buddyAllocator = (BuddyAllocator*)malloc(sizeof(BuddyAllocator));
+    buddyAllocator->root = create_node(TOTAL_MEMORY,0,NULL);
+    return buddyAllocator;
 }
 
 /**
@@ -284,9 +286,32 @@ BuddyAllocator* create_allocator() {
  * - If `create_node` fails (returns NULL), the function should handle it gracefully (students should consider this).
  */
 void split(Node* node) {
-    //todo
- }
+    // Ensure the node is not already split and can be split
+    if (!node->is_split && node->size > MIN_BLOCK_SIZE) {
+        size_t new_size = node->size / 2;  // Each child gets half of parent's size
 
+        // Create the left and right child nodes
+        node->left = create_node(new_size, node->mempool_offset, node);
+        node->right = create_node(new_size, node->mempool_offset + new_size, node);
+
+        // Mark the node as split
+        node->is_split = true;
+    }
+}
+
+size_t round_nearest_two(size_t size) {
+    size_t powers[] = {1, 2, 4, 8, 16, 32, 64, 128, 256, 512};
+    int len = sizeof(powers) / sizeof(powers[0]);
+
+    for (int i = 0; i < len - 1; i++) { // stop at len - 1 to safely access i + 1
+        if (size == powers[i]) {
+            return size;
+        } else if (size > powers[i] && size < powers[i + 1]) {
+            return size = powers[i + 1];
+        }
+    }
+    return size; 
+}
 
 /**
  * Recursively allocates memory from the buddy system.
@@ -313,8 +338,8 @@ void split(Node* node) {
  *   FS (64K)
  *     FS (32K)
  *       FS (16K)
- *         A (16K)
- *         F (16K)
+ *         A (8K)
+ *         F (8K)
  *       F (32K)
  * ```
  *
@@ -334,8 +359,39 @@ void split(Node* node) {
  *   - **Handling multiple allocations in sequence** should still leave space for future allocations.
  */
 Node* allocate_recursive(Node* node, size_t size) {
-    // todo
+    size = round_nearest_two(size); // Rounds to nearest power of 2.
+    // If node is not free and the node size is greater than the block size
+    if (!node->is_free) {
+        return NULL;
+    }
+
+    // If node size is block size and the node is not split
+    if (size > node->size/2 && !node->is_split) {
+        node->is_free = false;
+        return node;
+    }
+
+    // If node is not split, split the node and then allocate it
+    if ((size <= (node->size / 2))) {
+        split(node);
+
+        // Allocate left node
+        Node* allocated = allocate_recursive(node->left, size);
+        if (allocated != NULL) {
+            return allocated;
+        }
+
+        // Allocate right node
+        allocated = allocate_recursive(node->right, size);
+        if (allocated != NULL) {
+            return allocated;
+        }
+    }
+
+    return NULL;
 }
+
+
 
 
 /**
@@ -368,7 +424,22 @@ Node* allocate_recursive(Node* node, size_t size) {
  * @return A pointer to the allocated memory, or `NULL` if allocation fails.
  */
  void* allocate(BuddyAllocator* allocator, size_t size) {
-    // todo
+    if(size < MIN_BLOCK_SIZE) {
+        size = MIN_BLOCK_SIZE;
+    }
+    if(size > TOTAL_MEMORY) { 
+        printf("Allocation failed: requested size exceeds total memory.\n");
+        return NULL;
+    }
+    
+    Node* allocated_node = allocate_recursive(allocator->root, size);
+    if(allocated_node == NULL) {
+        printf("Allocation failed: no suitable free block found for %zu KB.\n", size);
+        return NULL;
+    }
+
+    // Return a pointer because void* is a type for the block in order to free this amount of memory from it's address
+    return &(allocator->memory_pool[allocated_node->mempool_offset]);
  }
 
 /**
@@ -396,7 +467,21 @@ Node* allocate_recursive(Node* node, size_t size) {
  * @param node A pointer to the node being freed, which may trigger coalescing.
  */
 void coalesce(Node* node) {
-    //todo
+    if (node == NULL || node->parent == NULL) {
+        return;
+    }
+
+    Node* parent = node->parent;
+
+    if (parent->left->is_free && parent->right->is_free && !parent->left->is_split && !parent->right->is_split) {
+        free(parent->left);
+        free(parent->right);
+        parent->left = NULL;
+        parent->right = NULL;
+        parent->is_split = false;
+        parent->is_free = true;
+        coalesce(parent);
+    }
  }
 
 /**
@@ -418,7 +503,12 @@ void coalesce(Node* node) {
  * @param node A pointer to the node representing the allocated memory block.
  */
  void free_recursive(Node* node) {
-    //todo
+    if (node == NULL) {
+        return;
+    }
+
+    node->is_free = true;
+    coalesce(node);
   }
 
 
@@ -447,7 +537,21 @@ void coalesce(Node* node) {
  */
 
 Node* find_node(Node* node, size_t mempool_offset) {
-    //todo
+    if (node == NULL) {
+        return NULL;
+    }
+
+    if (node->mempool_offset == mempool_offset && (!node->is_split)) {
+        return node;
+    }
+
+    size_t right_offset = node->mempool_offset + (node->size / 2);
+
+    if (mempool_offset < right_offset) {
+        return find_node(node->left, mempool_offset);
+    } else {
+        return find_node(node->right, mempool_offset);
+    }
 }
 
 
@@ -472,7 +576,17 @@ Node* find_node(Node* node, size_t mempool_offset) {
  * @param ptr A pointer to the memory block that needs to be freed.
  */
 void deallocate(BuddyAllocator* allocator, void* ptr) {
-    //todo
+    size_t mempool_offset = (char*)ptr - allocator->memory_pool;
+
+    if (mempool_offset >= TOTAL_MEMORY) {
+        return;
+    }
+
+    Node* node = find_node(allocator->root, mempool_offset);
+
+    if(node != NULL && !node->is_free && !node->is_split) {
+        free_recursive(node);
+    }
 }
 
 
@@ -497,7 +611,13 @@ void deallocate(BuddyAllocator* allocator, void* ptr) {
  * @param node A pointer to the root node of the tree (or subtree).
  */
 void destroy_tree(Node* node) {
-    //todo
+    if (node == NULL) {
+        return;
+    }
+
+    destroy_tree(node->left);
+    destroy_tree(node->right);
+    free(node);
 }
 
 /**
@@ -518,7 +638,8 @@ void destroy_tree(Node* node) {
  * @param allocator A pointer to the `BuddyAllocator` instance to be freed.
  */
  void destroy_allocator(BuddyAllocator* allocator) {
-    //todo
+    destroy_tree(allocator->root);
+    free(allocator);
 }
 
 // do not remove this line, your main will not be used when this is set
@@ -535,15 +656,27 @@ int main() {
     printf("\nInitial Tree\n");
     print_tree(allocator->root, 0);
 
-    printf("\nAllocating 16KB\n");
-    void* block1 = allocate(allocator, 16 * 1024);
+    printf("\nAllocating 12KB\n");
+    void* block1 = allocate(allocator, 12 * 1024);
+    print_tree(allocator->root, 0);
+
+    printf("\nAllocating 512KB\n");
+    void* block5 = allocate(allocator, 512 * 1024);
     print_tree(allocator->root, 0);
 
     printf("\nAllocating 8KB\n");
     void* block2 = allocate(allocator, 8 * 1024);
     print_tree(allocator->root, 0);
 
-    printf("\nFreeing 16KB\n");
+    printf("\nAllocating 16KB\n");
+    void* block3 = allocate(allocator, 16 * 1024);
+    print_tree(allocator->root, 0);
+
+    printf("\nAllocating 6KB\n");
+    void* block4 = allocate(allocator, 6 * 1024);
+    print_tree(allocator->root, 0);
+
+    printf("\nFreeing 12KB\n");
     deallocate(allocator, block1);
     print_tree(allocator->root, 0);
 
@@ -551,7 +684,30 @@ int main() {
     deallocate(allocator, block2);
     print_tree(allocator->root, 0);
 
+    printf("\nFreeing 16KB\n");
+    deallocate(allocator, block3);
+    print_tree(allocator->root, 0);
+
+    printf("\nFreeing 6KB\n");
+    deallocate(allocator, block4);
+    print_tree(allocator->root, 0);
+
     destroy_allocator(allocator);
+
+    allocator = create_allocator();
+    printf("\nInitial Second Tree\n");
+    print_tree(allocator->root, 0);
+
+    printf("\nAllocating 512KB\n");
+    block1 = allocate(allocator, 512 * 1024);
+    print_tree(allocator->root, 0);
+
+    printf("\nFreeing 512KB\n");
+    deallocate(allocator, block1);
+    print_tree(allocator->root, 0);
+
+    destroy_allocator(allocator);
+
     return 0;
 }
 
